@@ -1,6 +1,6 @@
 //*****************************************************************************
 //
-// ignite.c - Illuminating main program
+// sparkle_main.c - Sparkling main program
 //
 //*****************************************************************************
 
@@ -113,7 +113,7 @@ void InitClocksGPIOAndTimer()
 	// Make pin 7 rising edge triggered interrupt.
 	//
 	GPIOPinTypeGPIOInput(GPIO_PORTA_BASE, GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_5);
-	GPIOIntTypeSet(GPIO_PORTA_BASE, GPIO_PIN_5, GPIO_RISING_EDGE);
+	GPIOIntTypeSet(GPIO_PORTA_BASE, GPIO_PIN_5, GPIO_BOTH_EDGES);
 
 	//
 	// Enable the pin interrupts.
@@ -175,13 +175,25 @@ main(void)
 	GPIOPinWrite(GPIO_PORTB_BASE, GPIO_PIN_2, GPIO_PIN_2);
     while(1)
     {
+    	// Check for 'idle - no movement detected' timer trig status
     	if (idleTimerTrigged)
     	{
     		idleTimerTrigged = 0;
     		UARTprintf("Idle timer trigged, turning leds off\n");
+
+    		if (GPIOPinRead(GPIO_PORTA_BASE, GPIO_PIN_5))
+    		{
+    			// level is still high - let's restart the timer
+    			UARTprintf("Level still high, restarting timer\n");
+        		TimerLoadSet(TIMER1_BASE, TIMER_A, ulPeriod);
+    			TimerEnable(TIMER1_BASE, TIMER_A);
+    		}
+    		else
+    		{
     		// Turn the leds off
-    		GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_2, 0);
-			GPIOPinWrite(GPIO_PORTB_BASE, GPIO_PIN_2, 0);
+    			GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_2, 0);
+    			GPIOPinWrite(GPIO_PORTB_BASE, GPIO_PIN_2, 0);
+    		}
     	}
 
 
