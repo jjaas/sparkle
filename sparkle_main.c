@@ -129,7 +129,7 @@ void InitClocksGPIOAndTimer()
 	int ulPeriod = (SysCtlClockGet() ) ; // once per second
 
 	TimerLoadSet(TIMER0_BASE, TIMER_A, ulPeriod);
-	TimerLoadSet(TIMER1_BASE, TIMER_A, ulPeriod * 15);
+	TimerLoadSet(TIMER1_BASE, TIMER_A, ulPeriod * 60);
 
 	IntEnable(INT_TIMER0A);
 	IntEnable(INT_TIMER1A);
@@ -170,7 +170,7 @@ main(void)
 
     UARTprintf("Started!\n");
 
-    int ulPeriod = (SysCtlClockGet() * 15) ;
+    int ulPeriod = (SysCtlClockGet() * 60) ;
 	GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_2, GPIO_PIN_2);
 	GPIOPinWrite(GPIO_PORTB_BASE, GPIO_PIN_2, GPIO_PIN_2);
     while(1)
@@ -225,7 +225,8 @@ main(void)
     	}
     	if (timerTrigged)
     	{
-    		if (GPIOPinRead(GPIO_PORTA_BASE, GPIO_PIN_5))
+    		int gpioActive = GPIOPinRead(GPIO_PORTA_BASE, GPIO_PIN_5);
+    		if (gpioActive)
     		{
     			UARTprintf("Input active (motion detected)\n");
     		}
@@ -236,6 +237,14 @@ main(void)
     		else
     		{
     			UARTprintf("Timer running for %d\n", (TimerValueGet(TIMER1_BASE, TIMER_A) + SysCtlClockGet()/2)  / SysCtlClockGet());
+    			if (gpioActive)
+    			{
+    				GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_2, GPIO_PIN_2);
+    			}
+    			else
+    			{
+    				GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_2, 0);
+    			}
     		}
     		timerTrigged = 0;
     	}
