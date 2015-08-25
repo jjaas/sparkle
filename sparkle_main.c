@@ -2,6 +2,26 @@
 //
 // sparkle_main.c - Sparkling main program
 //
+// Sets on PWM signal for LED control when interrupt signal is detected
+// from PIR movement detector. After a period of no movement, turns the
+// signal off.
+//
+// PIR signal interrupt is trigged on both signal edges.
+// Interrupt turns on the PWM generator signal, ramping up the PWM pulse width.
+// PWM pulse is used to drive the MOSFET, and thus smoothly lighting up the LED strip.
+//
+// Each interrupt resets the idle timer (TIMER1).
+
+// When the no movement is detected for defined period (60sec), timer runs out
+// causing another interrupt. This interrupt starts a PWM pulse width ramp-down,
+// dimming the leds and finally turns off the PWM generator output.
+//
+// Pins used on EK-TM4C123GLX board
+//
+//   PA5  -  PIR sensor input
+//   PC5  -  PWM generator output
+//   PF2  -  On-board led, blue component
+//
 //*****************************************************************************
 
 #include <stdint.h>
@@ -25,18 +45,6 @@ void GPIOMotionIsr(void);
 void PeriodicTimerIsr(void);
 void IdleTimerIsr(void);
 
-//*****************************************************************************
-//
-//! \addtogroup example_list
-//! <h1>Hello World (hello)</h1>
-//!
-//! A very simple ``hello world'' example.  It simply displays ``Hello World!''
-//! on the UART and is a starting point for more complicated applications.
-//!
-//! UART0, connected to the Virtual Serial Port and running at
-//! 115,200, 8-N-1, is used to display messages from this application.
-//
-//*****************************************************************************
 
 //*****************************************************************************
 //
@@ -133,7 +141,7 @@ void InitClocksGPIOAndTimer()
     //
     // Make pin 7 rising edge triggered interrupt.
     //
-    GPIOPinTypeGPIOInput(GPIO_PORTA_BASE, GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_5);
+    GPIOPinTypeGPIOInput(GPIO_PORTA_BASE, GPIO_PIN_5);
     GPIOIntTypeSet(GPIO_PORTA_BASE, GPIO_PIN_5, GPIO_BOTH_EDGES);
 
     //
@@ -157,7 +165,6 @@ void InitClocksGPIOAndTimer()
     TimerIntEnable(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
     TimerIntEnable(TIMER1_BASE, TIMER_TIMA_TIMEOUT);
     TimerEnable(TIMER0_BASE, TIMER_A);
-    // TimerEnable(TIMER1_BASE, TIMER_A);
 
     //
     // Enable the GPIO port that is used for the on-board LED.
@@ -165,39 +172,42 @@ void InitClocksGPIOAndTimer()
     ROM_SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOF);
 
     //
-    // Enable the GPIO pins for the LED (PF2 & PF3).
+    // Enable the GPIO pin for blue LED component (PF2).
     //
     ROM_GPIOPinTypeGPIOOutput(GPIO_PORTF_BASE, GPIO_PIN_2);
 
 }
 
 int timerTrigged = 0, idleTimerTrigged = 0, interrupted = 0, ledOn = 0;
-int MAIN_DELAY;
 //*****************************************************************************
 //
-// Print "Hello World!" to the UART on the evaluation board.
+// Main loop
 //
 //*****************************************************************************
 int
 main(void)
 {
-    // Initialize relevant GPIO pins and periodic timer
+	int main_delay;
+
+	// Initialize relevant GPIO pins and periodic timer
     InitClocksGPIOAndTimer();
 
     // Initialize the UART.
     ConfigureUART();
 
-    MAIN_DELAY = SysCtlClockGet() / 200;
+    main_delay = SysCtlClockGet() / 200;
 
     UARTprintf("Started!\n");
 
     ulPeriod = (SysCtlClockGet() * LIGHTS_ON_PERIOD_SEC) ;
+
+    // Set the blue led on at startup. Will shut down in first periodic timer trig.
     GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_2, GPIO_PIN_2);
     while(1)
     {
         if (idleTimerTrigged)
         {
-            // 'idle - no movement detected' timer trigged
+            // idle (no movement detected) timer trigged
 
             idleTimerTrigged = 0;
             UARTprintf("Idle timer trigged, turning leds off\n");
@@ -217,7 +227,7 @@ main(void)
                 for (i = ui32Load; i > 10; i-=10)
                 {
                     PWMPulseWidthSet(PWM0_BASE, PWM_OUT_7, i);
-                    SysCtlDelay(MAIN_DELAY/10);
+                    SysCtlDelay(main_delay/10);
                 }
 
                 PWMOutputState(PWM0_BASE, PWM_OUT_7_BIT, false);
@@ -245,7 +255,7 @@ main(void)
                 for (i = 10; i < ui32Load; i+=10)
                 {
                     PWMPulseWidthSet(PWM0_BASE, PWM_OUT_7, i);
-                    SysCtlDelay(MAIN_DELAY/10);
+                    SysCtlDelay(main_delay/10);
                 }
 
                 UARTprintf("Starting timer\n");
@@ -290,7 +300,7 @@ main(void)
         //
         // Delay for a bit.
         //
-        SysCtlDelay(MAIN_DELAY);
+        SysCtlDelay(main_delay);
     }
 }
 
