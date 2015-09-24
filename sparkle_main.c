@@ -41,9 +41,13 @@
 #include "driverlib/uart.h"
 #include "utils/uartstdio.h"
 
-void GPIOMotionIsr(void);
+void GPIOLightSwitchIsr(void);
+void GPIOMotionDetectorIsr(void);
+
 void PeriodicTimerIsr(void);
 void IdleTimerIsr(void);
+void rampGenericPWM(bool rampDirection, uint32_t pwmBase, uint32_t pwm,
+		uint32_t pwmBit, uint32_t delay);
 
 #define LIGHTS_ON_PERIOD_SEC 60
 #define PWM_FREQUENCY 500
@@ -53,11 +57,14 @@ void IdleTimerIsr(void);
 #define PWM_RAMP_UP   true
 #define PWM_RAMP_DOWN false
 
+#define ON 1
+#define OFF 0
 
-bool timerTrigged = 0, idleTimerTrigged = 0, interrupted = 0;
+bool timerTrigged = 0, idleTimerTrigged = 0, motionDetectorTrigged = 0,
+		lightSwitchTrigged = 0;
+int lightSwitchState = 0;
 uint32_t ulPeriod;
 uint32_t ui32Load;
-
 
 //*****************************************************************************
 //
@@ -76,188 +83,210 @@ __error__(char *pcFilename, uint32_t ui32Line)
 // Configure the UART and its pins.  This must be called before UARTprintf().
 //
 //*****************************************************************************
-void
-ConfigureUART(void)
-{
-    //
-    // Enable the GPIO Peripheral used by the UART.
-    //
-    ROM_SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOA);
+void ConfigureUART(void) {
+	//
+	// Enable the GPIO Peripheral used by the UART.
+	//
+	ROM_SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOA);
 
-    //
-    // Enable UART0
-    //
-    ROM_SysCtlPeripheralEnable(SYSCTL_PERIPH_UART0);
+	//
+	// Enable UART0
+	//
+	ROM_SysCtlPeripheralEnable(SYSCTL_PERIPH_UART0);
 
-    //
-    // Configure GPIO Pins for UART mode.
-    //
-    ROM_GPIOPinConfigure(GPIO_PA0_U0RX);
-    ROM_GPIOPinConfigure(GPIO_PA1_U0TX);
-    ROM_GPIOPinTypeUART(GPIO_PORTA_BASE, GPIO_PIN_0 | GPIO_PIN_1);
+	//
+	// Configure GPIO Pins for UART mode.
+	//
+	ROM_GPIOPinConfigure(GPIO_PA0_U0RX);
+	ROM_GPIOPinConfigure(GPIO_PA1_U0TX);
+	ROM_GPIOPinTypeUART(GPIO_PORTA_BASE, GPIO_PIN_0 | GPIO_PIN_1);
 
-    //
-    // Use the internal 16MHz oscillator as the UART clock source.
-    //
-    UARTClockSourceSet(UART0_BASE, UART_CLOCK_PIOSC);
+	//
+	// Use the internal 16MHz oscillator as the UART clock source.
+	//
+	UARTClockSourceSet(UART0_BASE, UART_CLOCK_PIOSC);
 
-    //
-    // Initialize the UART for console I/O.
-    //
-    UARTStdioConfig(0, 115200, 16000000);
+	//
+	// Initialize the UART for console I/O.
+	//
+	UARTStdioConfig(0, 115200, 16000000);
 }
 
-void InitClocksGPIOAndTimer()
-{
-    uint32_t ui32PWMClock;
+void InitClocksGPIOAndTimer() {
+	uint32_t ui32PWMClock;
 
-    //
-    // Enable lazy stacking for interrupt handlers.  This allows floating-point
-    // instructions to be used within interrupt handlers, but at the expense of
-    // extra stack usage.
-    //
-    ROM_FPULazyStackingEnable();
+	//
+	// Enable lazy stacking for interrupt handlers.  This allows floating-point
+	// instructions to be used within interrupt handlers, but at the expense of
+	// extra stack usage.
+	//
+	ROM_FPULazyStackingEnable();
 
-    //
-    // Set the clocking to run directly from the crystal.
-    //
-    ROM_SysCtlClockSet(SYSCTL_SYSDIV_5 | SYSCTL_USE_PLL | SYSCTL_XTAL_16MHZ | SYSCTL_OSC_MAIN);
-    ROM_SysCtlPWMClockSet(SYSCTL_PWMDIV_8);
+	//
+	// Set the clocking to run directly from the crystal.
+	//
+	ROM_SysCtlClockSet(
+	SYSCTL_SYSDIV_5 | SYSCTL_USE_PLL | SYSCTL_XTAL_16MHZ | SYSCTL_OSC_MAIN);
+	ROM_SysCtlPWMClockSet(SYSCTL_PWMDIV_8);
 
-    // PWM Setup
-    SysCtlPeripheralEnable(SYSCTL_PERIPH_PWM0);
-    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOC);
-    GPIOPinConfigure(GPIO_PC5_M0PWM7);
-    GPIOPinTypePWM(GPIO_PORTC_BASE, GPIO_PIN_5);
+	// PWM Setup
+	SysCtlPeripheralEnable(SYSCTL_PERIPH_PWM0);
+	SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOC);
+	GPIOPinConfigure(GPIO_PC4_M0PWM6);
+	GPIOPinTypePWM(GPIO_PORTC_BASE, GPIO_PIN_4);
+	GPIOPinConfigure(GPIO_PC5_M0PWM7);
+	GPIOPinTypePWM(GPIO_PORTC_BASE, GPIO_PIN_5);
 
-    ui32PWMClock = SysCtlClockGet() / 8;
-    ui32Load = (ui32PWMClock / PWM_FREQUENCY) - 1;
+	ui32PWMClock = SysCtlClockGet() / 8;
+	ui32Load = (ui32PWMClock / PWM_FREQUENCY) - 1;
 
-    PWMGenConfigure(PWM0_BASE, PWM_GEN_3, PWM_GEN_MODE_DOWN | PWM_GEN_MODE_NO_SYNC);
-    PWMGenPeriodSet(PWM0_BASE, PWM_GEN_3, ui32Load);
-    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_7, PWM_LOW );
+	PWMGenConfigure(PWM0_BASE, PWM_GEN_3,
+	PWM_GEN_MODE_DOWN | PWM_GEN_MODE_NO_SYNC);
+	PWMGenPeriodSet(PWM0_BASE, PWM_GEN_3, ui32Load);
+	PWMPulseWidthSet(PWM0_BASE, PWM_OUT_6, PWM_LOW);
+	PWMPulseWidthSet(PWM0_BASE, PWM_OUT_7, PWM_LOW);
 
-    // Started as not active
-    PWMOutputState(PWM0_BASE, PWM_OUT_7_BIT, false);
-    PWMGenEnable(PWM0_BASE, PWM_GEN_3);
+	// Started as not active
+	PWMOutputState(PWM0_BASE, PWM_OUT_6_BIT, false);
+	PWMOutputState(PWM0_BASE, PWM_OUT_7_BIT, false);
+	PWMGenEnable(PWM0_BASE, PWM_GEN_3);
 
-    //
-    // Enable peripheral and register interrupt handler
-    //
-    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOA);
-    GPIOIntRegister(GPIO_PORTA_BASE, GPIOMotionIsr);
+	//
+	// Enable peripheral and register interrupt handler
+	//
+	SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOA);
+	GPIOIntRegister(GPIO_PORTA_BASE, GPIOMotionDetectorIsr);
 
-    //
-    // Make pin 7 rising edge triggered interrupt.
-    //
-    GPIOPinTypeGPIOInput(GPIO_PORTA_BASE, GPIO_PIN_5);
-    GPIOIntTypeSet(GPIO_PORTA_BASE, GPIO_PIN_5, GPIO_BOTH_EDGES);
+	SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOE);
+	GPIOIntRegister(GPIO_PORTE_BASE, GPIOLightSwitchIsr);
 
-    //
-    // Enable the pin interrupts.
-    //
-    GPIOIntEnable(GPIO_PORTA_BASE, GPIO_INT_PIN_5);
+	GPIOPinTypeGPIOInput(GPIO_PORTA_BASE, GPIO_PIN_5);
+	GPIOIntTypeSet(GPIO_PORTA_BASE, GPIO_PIN_5, GPIO_BOTH_EDGES);
 
-    SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMER0);
-    SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMER1);
-    TimerConfigure(TIMER0_BASE, TIMER_CFG_A_PERIODIC);
-    TimerConfigure(TIMER1_BASE, TIMER_CFG_A_ONE_SHOT);
-    TimerIntRegister(TIMER0_BASE, TIMER_A, PeriodicTimerIsr);
-    TimerIntRegister(TIMER1_BASE, TIMER_A, IdleTimerIsr);
-    ulPeriod = (SysCtlClockGet()) ; // once per second
+	GPIOPinTypeGPIOInput(GPIO_PORTE_BASE, GPIO_PIN_4);
+	GPIOIntTypeSet(GPIO_PORTE_BASE, GPIO_PIN_4, GPIO_RISING_EDGE);
 
-    TimerLoadSet(TIMER0_BASE, TIMER_A, ulPeriod);
-    TimerLoadSet(TIMER1_BASE, TIMER_A, ulPeriod * LIGHTS_ON_PERIOD_SEC);
+	//
+	// Enable the pin interrupts.
+	//
+	GPIOIntEnable(GPIO_PORTA_BASE, GPIO_INT_PIN_5);
+	GPIOIntEnable(GPIO_PORTE_BASE, GPIO_INT_PIN_4);
 
-    IntEnable(INT_TIMER0A);
-    IntEnable(INT_TIMER1A);
-    TimerIntEnable(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
-    TimerIntEnable(TIMER1_BASE, TIMER_TIMA_TIMEOUT);
-    TimerEnable(TIMER0_BASE, TIMER_A);
+	SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMER0);
+	SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMER1);
+	TimerConfigure(TIMER0_BASE, TIMER_CFG_A_PERIODIC);
+	TimerConfigure(TIMER1_BASE, TIMER_CFG_A_ONE_SHOT);
+	TimerIntRegister(TIMER0_BASE, TIMER_A, PeriodicTimerIsr);
+	TimerIntRegister(TIMER1_BASE, TIMER_A, IdleTimerIsr);
+	ulPeriod = (SysCtlClockGet()); // once per second
 
-    //
-    // Enable the GPIO port that is used for the on-board LED.
-    //
-    ROM_SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOF);
+	TimerLoadSet(TIMER0_BASE, TIMER_A, ulPeriod);
+	TimerLoadSet(TIMER1_BASE, TIMER_A, ulPeriod * LIGHTS_ON_PERIOD_SEC);
+	TimerLoadSet(TIMER1_BASE, TIMER_B, ulPeriod * 3);
 
-    //
-    // Enable the GPIO pin for blue LED component (PF2).
-    //
-    ROM_GPIOPinTypeGPIOOutput(GPIO_PORTF_BASE, GPIO_PIN_2);
+	IntEnable(INT_TIMER0A);
+	IntEnable(INT_TIMER1A);
+	TimerIntEnable(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
+	TimerIntEnable(TIMER1_BASE, TIMER_TIMA_TIMEOUT);
+	TimerEnable(TIMER0_BASE, TIMER_A);
+
+	//
+	// Enable the GPIO port that is used for the on-board LED.
+	//
+	ROM_SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOF);
+
+	//
+	// Enable the GPIO pin for blue LED component (PF2).
+	//
+	ROM_GPIOPinTypeGPIOOutput(GPIO_PORTF_BASE, GPIO_PIN_2);
 
 }
+
+#define OVERHEAD_PWM PWM0_BASE, PWM_OUT_7
+#define WORKSTATE_PWM PWM0_BASE, PWM_OUT_6
 
 //
 // ramp the PWM pulse widht up or down
 //
-void rampPWM(bool rampDirection){
+void rampTopPWM(bool rampDirection) {
+	rampGenericPWM(rampDirection, PWM0_BASE, PWM_OUT_7, PWM_OUT_7_BIT,
+			SysCtlClockGet() / 2048);
+}
+void rampBottomPWM(bool rampDirection) {
+	rampGenericPWM(rampDirection, PWM0_BASE, PWM_OUT_6, PWM_OUT_6_BIT,
+			SysCtlClockGet() / 4096);
+}
 
-    // Start value is the current PWM pulse width regardless the ramp direction
-    uint32_t i = PWMPulseWidthGet(PWM0_BASE, PWM_OUT_7);
-    uint32_t delay = SysCtlClockGet() / 2048;
+void rampGenericPWM(bool rampDirection, uint32_t pwmBase, uint32_t pwm,
+		uint32_t pwmBit, uint32_t delay) {
 
-    if (rampDirection == PWM_RAMP_UP)
-    {
-        uint32_t targetPwmLoad = PWMGenPeriodGet(PWM0_BASE, PWM_GEN_3);
-        PWMOutputState(PWM0_BASE, PWM_OUT_7_BIT, true);
+	// Start value is the current PWM pulse width regardless the ramp direction
+	uint32_t i = PWMPulseWidthGet(pwmBase, pwm);
 
-        for (; i < targetPwmLoad; i+=PWM_STEP)
-        {
-            PWMPulseWidthSet(PWM0_BASE, PWM_OUT_7, i);
-            SysCtlDelay(delay);
-        }
-    }
-    else // rampDirection == PWM_RAMP_DOWN
-    {
-        for (; i > PWM_LOW; i-=PWM_STEP)
-        {
-            PWMPulseWidthSet(PWM0_BASE, PWM_OUT_7, i);
-            SysCtlDelay(delay);
-        }
+	if (rampDirection == PWM_RAMP_UP) {
+		uint32_t targetPwmLoad = PWMGenPeriodGet(pwmBase, PWM_GEN_3);
+		PWMOutputState(pwmBase, pwmBit, true);
 
-        PWMOutputState(PWM0_BASE, PWM_OUT_7_BIT, false);
-    }
+		for (; i < targetPwmLoad; i += PWM_STEP)
+		{
+			PWMPulseWidthSet(pwmBase, pwm, i);
+			SysCtlDelay(delay);
+		}
+	} else // rampDirection == PWM_RAMP_DOWN
+	{
+		for (; i > PWM_LOW; i -= PWM_STEP)
+		{
+			PWMPulseWidthSet(pwmBase, pwm, i);
+			SysCtlDelay(delay);
+		}
+
+		PWMOutputState(pwmBase, pwmBit, false);
+	}
 }
 
 //
 // (re)start timer for idle period counting (no movement -> lights out)
 //
-void startIdleDetectionTimer(uint32_t period)
-{
-    TimerLoadSet(TIMER1_BASE, TIMER_A, period);
-    TimerEnable(TIMER1_BASE, TIMER_A);
+void startIdleDetectionTimer(uint32_t period) {
+	TimerLoadSet(TIMER1_BASE, TIMER_A, period);
+	TimerEnable(TIMER1_BASE, TIMER_A);
 }
 
 //
 // Sets the defined status led on or off
 //
-void setStatusLedState(bool statusOn)
-{
-    GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_2, statusOn ? GPIO_PIN_2 : 0);
+void setStatusLedState(bool statusOn) {
+	GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_2, statusOn ? GPIO_PIN_2 : 0);
 }
 
 //
 // returns motion detector GPIO pin status
 //
-bool motionDetectorGPIOActive()
-{
-    return GPIOPinRead(GPIO_PORTA_BASE, GPIO_PIN_5) != 0;
+bool motionDetectorGPIOActive() {
+	return GPIOPinRead(GPIO_PORTA_BASE, GPIO_PIN_5) != 0;
+}
+
+//
+// returns light switch GPIO pin status
+//
+int lightSwitchGPIOActive() {
+	return GPIOPinRead(GPIO_PORTE_BASE, GPIO_PIN_4);
 }
 
 //
 // returns idle timer running status, indicates whether lights are still on or not
 //
-bool idleTimerRunning()
-{
-    return TimerValueGet(TIMER1_BASE, TIMER_A) != TimerLoadGet(TIMER1_BASE, TIMER_A);
+bool idleTimerRunning() {
+	return TimerValueGet(TIMER1_BASE, TIMER_A)
+			!= TimerLoadGet(TIMER1_BASE, TIMER_A);
 }
 
 //
 // returns idle timer remaining value in wall clock time
 //
-uint32_t idleTimerRemainingSecondsGet()
-{
-    return (TimerValueGet(TIMER1_BASE, TIMER_A) + SysCtlClockGet()/2) / SysCtlClockGet();
+uint32_t idleTimerRemainingSecondsGet() {
+	return (TimerValueGet(TIMER1_BASE, TIMER_A) + SysCtlClockGet() / 2)
+			/ SysCtlClockGet();
 }
 
 //*****************************************************************************
@@ -265,122 +294,144 @@ uint32_t idleTimerRemainingSecondsGet()
 // Main loop
 //
 //*****************************************************************************
-int
-main(void)
-{
+int main(void) {
 
-    // Initialize relevant GPIO pins and periodic timer
-    InitClocksGPIOAndTimer();
+	// Initialize relevant GPIO pins and periodic timer
+	InitClocksGPIOAndTimer();
 
-    // Initialize the UART.
-    ConfigureUART();
+	// Initialize the UART.
+	ConfigureUART();
 
-    UARTprintf("Started!\n");
+	UARTprintf("Started!\n");
 
-    ulPeriod = (SysCtlClockGet() * LIGHTS_ON_PERIOD_SEC) ;
+	ulPeriod = (SysCtlClockGet() * LIGHTS_ON_PERIOD_SEC);
 
-    // Set the blue led on at startup. Will shut down in first periodic timer trig.
-    setStatusLedState(true);
+	// Set the blue led on at startup. Will shut down in first periodic timer trig.
+	setStatusLedState(true);
 
-    while(1)
-    {
-        if (idleTimerTrigged)
-        {
-            // idle (no movement detected) timer trigged
-            idleTimerTrigged = 0;
+	while (1) {
+		if (lightSwitchTrigged) {
+			int i, realHit = 1;
 
-            UARTprintf("Idle timer trigged, turning leds off\n");
+			for (i = 0; i < 50; i++) {
 
-            if (motionDetectorGPIOActive())
-            {
-                // Level is still high - let's restart the timer.
+				SysCtlDelay(SysCtlClockGet() / 1000);
 
-                UARTprintf("Level still high, restarting timer\n");
-                startIdleDetectionTimer(ulPeriod);
-            }
-            else
-            {
-                setStatusLedState(false);
+				if (lightSwitchGPIOActive() == 0) {
+					realHit = 0;
+					break;
+				}
+			}
+			if (realHit) {
+				UARTprintf("Light switch hit\n");
+				if (lightSwitchState == OFF) {
+					lightSwitchState = ON;
+					UARTprintf("Switching ON\n");
+					rampBottomPWM(PWM_RAMP_UP);
+				} else {
+					lightSwitchState = OFF;
+					UARTprintf("Switching OFF\n");
+					rampBottomPWM(PWM_RAMP_DOWN);
+				}
+			}
+			else
+			{
+				UARTprintf("False hit\n");
+			}
+			lightSwitchTrigged = 0;
 
-                // Turn the PMW output off
-                rampPWM(PWM_RAMP_DOWN);
-            }
-        }
+		}
 
-        if (interrupted)
-        {
-            // Movement detected
+		if (idleTimerTrigged) {
+			// idle (no movement detected) timer trigged
+			idleTimerTrigged = 0;
 
-            interrupted = 0;
-            UARTprintf("Interrupted\n");
+			UARTprintf("Idle timer trigged, turning leds off\n");
 
-            if (!idleTimerRunning())
-            {
-                setStatusLedState(true);
+			if (motionDetectorGPIOActive()) {
+				// Level is still high - let's restart the timer.
 
-                // Turn the PMW output on
-                rampPWM(PWM_RAMP_UP);
+				UARTprintf("Level still high, restarting timer\n");
+				startIdleDetectionTimer(ulPeriod);
+			} else {
+				setStatusLedState(false);
 
-                UARTprintf("Starting timer\n");
-            }
-            else
-            {
-                // Leds are on at this point - no need to set those on again
-                UARTprintf("RE-Starting timer\n");
-            }
+				// Turn the PMW output off
+				rampTopPWM(PWM_RAMP_DOWN);
+				if (lightSwitchState == 1) {
+					rampBottomPWM(PWM_RAMP_DOWN);
+					lightSwitchState = 0;
+				}
+			}
+		}
 
-            startIdleDetectionTimer(ulPeriod);
-        }
-        if (timerTrigged)
-        {
-            // periodic status led driving timer trigged
-            timerTrigged = 0;
-            bool gpioActive = motionDetectorGPIOActive();
-            if (gpioActive)
-            {
-                UARTprintf("Input active (motion detected)\n");
-            }
-            if (!idleTimerRunning())
-            {
-                UARTprintf("Timer not running\n");
-            }
-            else
-            {
-                UARTprintf("Timer running for %d\n", idleTimerRemainingSecondsGet());
-                if (gpioActive)
-                {
-                    setStatusLedState(true);
-                }
-                else
-                {
-                    setStatusLedState(false);
-                }
-            }
-        }
-        //
-        // Sleep until next interrupt
-        //
-        SysCtlSleep();
-    }
+		if (motionDetectorTrigged) {
+			// Movement detected
+
+			motionDetectorTrigged = 0;
+			UARTprintf("motionDetectorTrigged\n");
+
+			if (!idleTimerRunning()) {
+				setStatusLedState(true);
+
+				// Turn the PMW output on
+				rampTopPWM(PWM_RAMP_UP);
+
+				UARTprintf("Starting timer\n");
+			} else {
+				// Leds are on at this point - no need to set those on again
+				UARTprintf("RE-Starting timer\n");
+			}
+
+			startIdleDetectionTimer(ulPeriod);
+		}
+		if (timerTrigged) {
+			// periodic status led driving timer trigged
+			timerTrigged = 0;
+			bool gpioActive = motionDetectorGPIOActive();
+			if (gpioActive) {
+				UARTprintf("Input active (motion detected)\n");
+			}
+			if (!idleTimerRunning()) {
+				UARTprintf("Timer not running\n");
+			} else {
+				UARTprintf("Timer running for %d\n",
+						idleTimerRemainingSecondsGet());
+				if (gpioActive) {
+					setStatusLedState(true);
+				} else {
+					setStatusLedState(false);
+				}
+			}
+		}
+		//
+		// Sleep until next interrupt
+		//
+		SysCtlSleep();
+	}
 }
 
-// Interrupt handler for the GPIO motion signal
-void GPIOMotionIsr(void)
-{
-    GPIOIntClear(GPIO_PORTA_BASE, GPIO_INT_PIN_5);
-    interrupted = 1;
+// Interrupt handler for the GPIO motion detector signal
+void GPIOMotionDetectorIsr(void) {
+	GPIOIntClear(GPIO_PORTA_BASE, GPIO_INT_PIN_5);
+	motionDetectorTrigged = 1;
+}
+
+// Interrupt handler for the GPIO light switch signal
+void GPIOLightSwitchIsr(void) {
+	GPIOIntClear(GPIO_PORTE_BASE, GPIO_INT_PIN_4);
+	lightSwitchTrigged = 1;
 }
 
 // Interrupt handler for the periodic status interrupt
-void PeriodicTimerIsr(void)
-{
-    TimerIntClear(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
-    timerTrigged = 1;
+void PeriodicTimerIsr(void) {
+	TimerIntClear(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
+	timerTrigged = 1;
 }
 
 // Interrupt handler for the idle movement timer
-void IdleTimerIsr(void)
-{
-    TimerIntClear(TIMER1_BASE, TIMER_TIMA_TIMEOUT);
-    idleTimerTrigged = 1;
+void IdleTimerIsr(void) {
+	TimerIntClear(TIMER1_BASE, TIMER_TIMA_TIMEOUT);
+	idleTimerTrigged = 1;
 }
+
