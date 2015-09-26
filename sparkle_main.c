@@ -19,9 +19,9 @@
 // Pins used on EK-TM4C123GLX board
 //
 //   PA5  -  PIR sensor input
-//   PC5  -  PWM generator output
 //   PE4  -  HW switch input
 //   PA2  -  IR detector input
+//   PB6  -  PWM generator output for IR LED
 //   PC5  -  PWM generator output for LED strip 1 (motion trigged)
 //   PC4  -  PWM generator output for LED strip 2 (switch trigged)
 //   PF2  -  On-board led, blue component
@@ -47,11 +47,17 @@
 
 void GPIOLightSwitchIsr(void);
 void GPIOMotionDetectorIsr(void);
-
-void PeriodicTimerIsr(void);
+void SendIRCode(uint32_t code);
+void blink_n(uint32_t n);
+void IRIntHandler(void);
+void IRTimerIsr(void);
 void IdleTimerIsr(void);
 void rampGenericPWM(bool rampDirection, uint32_t pwmBase, uint32_t pwm,
 		uint32_t pwmBit, uint32_t delay);
+int decodePulseBuffer(uint32_t *pulse_buf);
+
+void delay_ms(uint32_t ui32Us);
+void delay_us(uint32_t ui32Us);
 
 #define LIGHTS_ON_PERIOD_SEC 60
 #define PWM_FREQUENCY 500
@@ -64,11 +70,50 @@ void rampGenericPWM(bool rampDirection, uint32_t pwmBase, uint32_t pwm,
 #define ON 1
 #define OFF 0
 
-bool timerTrigged = 0, idleTimerTrigged = 0, motionDetectorTrigged = 0,
-		lightSwitchTrigged = 0;
+// define PORT and PIN that the detector is connected to
+#define IR_PORT          GPIO_PORTA_BASE
+#define IR_PIN           GPIO_PIN_2
+
+#define IR_TIMER_BASE    TIMER0_BASE
+#define IR_TIMER         TIMER_A
+#define IR_TIMER_PERIPH  SYSCTL_PERIPH_TIMER0
+#define IR_TIMER_CFG     TIMER_CFG_A_ONE_SHOT
+#define IR_TIMER_INT1    INT_TIMER1A
+#define IR_TIMER_INT2    TIMER_TIMA_TIMEOUT
+
+#define IR_TIMEOUT_VAL   30000
+#define MAX_PULSE_COUNT  100
+#define IR_MAX_BITS_VAL  5 // couple of extra bits
+
+// Todo: set better binary values
+#define AMBIENCE_ON 0x1
+#define AMBIENCE_OFF 0x2
+#define SWITCH_ON 0x5
+#define SWITCH_OFF 0x6
+
+bool idleTimerTrigged = 0, motionDetectorTrigged = 0, lightSwitchTrigged = 0;
 int lightSwitchState = 0;
+int receivedIRCode = 0;
 uint32_t ulPeriod;
 uint32_t ui32Load;
+
+volatile uint32_t ir_pulse_count, ir_timeout_flag, ir_ppct;
+volatile uint32_t g_ulIRPeriod, g_ulCountsPerMicrosecond;
+uint32_t pulse_buf[MAX_PULSE_COUNT + 1];  // pulse width count buffer
+
+// Todo: make this runtime selectable, by the user buttons, etc.
+#define RUN_AS_SLAVE
+
+#ifndef RUN_AS_MASTER
+#ifndef RUN_AS_SLAVE
+#error Define either role
+#endif
+#endif
+#ifdef RUN_AS_MASTER
+#ifdef RUN_AS_SLAVE
+#error Define either role
+#endif
+#endif
 
 //*****************************************************************************
 //
@@ -91,7 +136,7 @@ void ConfigureUART(void) {
 	//
 	// Enable the GPIO Peripheral used by the UART.
 	//
-	ROM_SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOA);
+//	ROM_SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOA);
 
 	//
 	// Enable UART0
@@ -133,7 +178,6 @@ void InitClocksGPIOAndTimer() {
 	SYSCTL_SYSDIV_5 | SYSCTL_USE_PLL | SYSCTL_XTAL_16MHZ | SYSCTL_OSC_MAIN);
 	ROM_SysCtlPWMClockSet(SYSCTL_PWMDIV_1);
 
-
 	// PWM Setup
 	SysCtlPeripheralEnable(SYSCTL_PERIPH_PWM0);
 	SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOC);
@@ -166,11 +210,8 @@ void InitClocksGPIOAndTimer() {
 	PWMGenPeriodSet(PWM0_BASE, PWM_GEN_0, 1050);
 	PWMPulseWidthSet(PWM0_BASE, PWM_OUT_0, 525);
 
-	PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT, true);
+	PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT, false);
 	PWMGenEnable(PWM0_BASE, PWM_GEN_0);
-
-
-
 
 	//
 	// Enable peripheral and register interrupt handler
@@ -181,7 +222,8 @@ void InitClocksGPIOAndTimer() {
 	SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOE);
 	GPIOIntRegister(GPIO_PORTE_BASE, GPIOLightSwitchIsr);
 
-	GPIOPinTypeGPIOInput(GPIO_PORTA_BASE, GPIO_PIN_5);
+	GPIOPinTypeGPIOInput(GPIO_PORTA_BASE, GPIO_PIN_2 | GPIO_PIN_5);
+	GPIOIntTypeSet(GPIO_PORTA_BASE, GPIO_PIN_2, GPIO_FALLING_EDGE);
 	GPIOIntTypeSet(GPIO_PORTA_BASE, GPIO_PIN_5, GPIO_BOTH_EDGES);
 
 	GPIOPinTypeGPIOInput(GPIO_PORTE_BASE, GPIO_PIN_4);
@@ -190,14 +232,14 @@ void InitClocksGPIOAndTimer() {
 	//
 	// Enable the pin interrupts.
 	//
-	GPIOIntEnable(GPIO_PORTA_BASE, GPIO_INT_PIN_5);
+	GPIOIntEnable(GPIO_PORTA_BASE, GPIO_INT_PIN_2 | GPIO_INT_PIN_5);
 	GPIOIntEnable(GPIO_PORTE_BASE, GPIO_INT_PIN_4);
 
 	SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMER0);
 	SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMER1);
-	TimerConfigure(TIMER0_BASE, TIMER_CFG_A_PERIODIC);
+	TimerConfigure(TIMER0_BASE, TIMER_CFG_A_ONE_SHOT);
 	TimerConfigure(TIMER1_BASE, TIMER_CFG_A_ONE_SHOT);
-	TimerIntRegister(TIMER0_BASE, TIMER_A, PeriodicTimerIsr);
+	TimerIntRegister(TIMER0_BASE, TIMER_A, IRTimerIsr);
 	TimerIntRegister(TIMER1_BASE, TIMER_A, IdleTimerIsr);
 	ulPeriod = (SysCtlClockGet()); // once per second
 
@@ -209,7 +251,7 @@ void InitClocksGPIOAndTimer() {
 	IntEnable(INT_TIMER1A);
 	TimerIntEnable(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
 	TimerIntEnable(TIMER1_BASE, TIMER_TIMA_TIMEOUT);
-	TimerEnable(TIMER0_BASE, TIMER_A);
+	// TimerEnable(TIMER0_BASE, TIMER_A);
 
 	//
 	// Enable the GPIO port that is used for the on-board LED.
@@ -221,6 +263,9 @@ void InitClocksGPIOAndTimer() {
 	//
 	ROM_GPIOPinTypeGPIOOutput(GPIO_PORTF_BASE, GPIO_PIN_2);
 
+	g_ulCountsPerMicrosecond = ROM_SysCtlClockGet() / 1000000;
+	// 10ms = timeout delay
+	g_ulIRPeriod = g_ulCountsPerMicrosecond * IR_TIMEOUT_VAL;
 }
 
 #define OVERHEAD_PWM PWM0_BASE, PWM_OUT_7
@@ -328,9 +373,10 @@ int main(void) {
 	ulPeriod = (SysCtlClockGet() * LIGHTS_ON_PERIOD_SEC);
 
 	// Set the blue led on at startup. Will shut down in first periodic timer trig.
-	setStatusLedState(true);
+	setStatusLedState(false);
 
 	while (1) {
+#ifdef RUN_AS_MASTER
 		if (lightSwitchTrigged) {
 			int i, realHit = 1;
 
@@ -348,15 +394,15 @@ int main(void) {
 				if (lightSwitchState == OFF) {
 					lightSwitchState = ON;
 					UARTprintf("Switching ON\n");
+					SendIRCode(SWITCH_ON);
 					rampBottomPWM(PWM_RAMP_UP);
 				} else {
 					lightSwitchState = OFF;
 					UARTprintf("Switching OFF\n");
+					SendIRCode(SWITCH_OFF);
 					rampBottomPWM(PWM_RAMP_DOWN);
 				}
-			}
-			else
-			{
+			} else {
 				UARTprintf("False hit\n");
 			}
 			lightSwitchTrigged = 0;
@@ -378,8 +424,10 @@ int main(void) {
 				setStatusLedState(false);
 
 				// Turn the PMW output off
+				SendIRCode(AMBIENCE_OFF);
 				rampTopPWM(PWM_RAMP_DOWN);
 				if (lightSwitchState == 1) {
+					SendIRCode(SWITCH_OFF);
 					rampBottomPWM(PWM_RAMP_DOWN);
 					lightSwitchState = 0;
 				}
@@ -396,6 +444,7 @@ int main(void) {
 				setStatusLedState(true);
 
 				// Turn the PMW output on
+				SendIRCode(AMBIENCE_ON);
 				rampTopPWM(PWM_RAMP_UP);
 
 				UARTprintf("Starting timer\n");
@@ -406,9 +455,11 @@ int main(void) {
 
 			startIdleDetectionTimer(ulPeriod);
 		}
-		if (timerTrigged) {
-			// periodic status led driving timer trigged
-			timerTrigged = 0;
+		//if (timerTrigged)
+
+		{
+			// signal the state using on-board led and UART printouts
+
 			bool gpioActive = motionDetectorGPIOActive();
 			if (gpioActive) {
 				UARTprintf("Input active (motion detected)\n");
@@ -428,14 +479,94 @@ int main(void) {
 		//
 		// Sleep until next interrupt
 		//
+#else
+		UARTprintf("SLAVE LOOP\n");
+		if (receivedIRCode != 0) {
+			uint32_t _code = receivedIRCode;
+			receivedIRCode = 0;
+			switch (_code) {
+				case AMBIENCE_ON:
+				rampTopPWM(PWM_RAMP_UP);
+				break;
+
+				case AMBIENCE_OFF:
+				rampTopPWM(PWM_RAMP_DOWN);
+				break;
+
+				case SWITCH_ON:
+				rampBottomPWM(PWM_RAMP_UP);
+				break;
+
+				case SWITCH_OFF:
+				rampBottomPWM(PWM_RAMP_DOWN);
+				break;
+
+				default:
+				break;
+			}
+
+			// Blink out the code
+			blink_n(_code);
+		}
+#endif
 		SysCtlSleep();
 	}
+}
+void blink_n(uint32_t n) {
+	setStatusLedState(false);
+	delay_ms(1000);
+	int i;
+	for (i = 0; i < n; i++) {
+		setStatusLedState(true);
+		delay_ms(500);
+		setStatusLedState(false);
+		delay_ms(500);
+	}
+}
+
+#define T1 3
+#define T2 (2*T1)
+#define T4 (4*T1)
+
+void SendIRCode(uint32_t code) {
+
+	blink_n(code);
+	// 1. send start pattern
+	PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT, true);
+	delay_ms(T4);
+	//	PWMGenEnable(PWM0_BASE, PWM_GEN_0);
+
+	// 2. send code bit-by-bit
+	int i;
+	for (i = 1; i <= (IR_MAX_BITS_VAL); i++) {
+
+		// transmit start of the bit (PWM off)
+		PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT, false);
+		delay_ms(T1);
+
+		// transmit end of the bit (PWM on)
+		PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT, true);
+		int bit = (code >> (IR_MAX_BITS_VAL - i)) & 0x1;
+		if (bit) {
+			delay_ms(T2);
+		} else {
+			delay_ms(T1);
+		}
+	}
+
+	// 3. Set the PWM off
+	PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT, false);
 }
 
 // Interrupt handler for the GPIO motion detector signal
 void GPIOMotionDetectorIsr(void) {
-	GPIOIntClear(GPIO_PORTA_BASE, GPIO_INT_PIN_5);
+	GPIOIntClear(GPIO_PORTA_BASE, GPIO_INT_PIN_2 | GPIO_INT_PIN_5);
+#ifdef RUN_AS_MASTER
 	motionDetectorTrigged = 1;
+#else
+	IRIntHandler();
+#endif
+
 }
 
 // Interrupt handler for the GPIO light switch signal
@@ -444,15 +575,88 @@ void GPIOLightSwitchIsr(void) {
 	lightSwitchTrigged = 1;
 }
 
-// Interrupt handler for the periodic status interrupt
-void PeriodicTimerIsr(void) {
-	TimerIntClear(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
-	timerTrigged = 1;
-}
-
 // Interrupt handler for the idle movement timer
 void IdleTimerIsr(void) {
 	TimerIntClear(TIMER1_BASE, TIMER_TIMA_TIMEOUT);
 	idleTimerTrigged = 1;
+}
+
+// Interrupt handler IR detection timeout
+void IRTimerIsr(void) {
+	TimerIntClear(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
+	GPIOIntTypeSet(IR_PORT, IR_PIN, GPIO_FALLING_EDGE);
+	receivedIRCode = decodePulseBuffer(pulse_buf);
+	ir_pulse_count = 0;
+
+//timerTrigged = 1;
+}
+
+int decodePulseBuffer(unsigned int *pulse_buf) {
+	unsigned int bp, ctZeroBit;
+	unsigned int code;
+
+	code = 0;
+	bp = 0;
+
+// First pulse is a start bit representing 4 time periods(approx. 2.4ms??)
+// calculate 2.5 time periods as the threshold between 2t and 3t
+// any pulse width greater that 2.5t will be considered a logical '1'
+	ctZeroBit = (pulse_buf[0] / 8) * 5;
+
+	for (bp = IR_MAX_BITS_VAL - 1; bp > 0; bp--) { //Start with pulse/bit 12 (MSB)
+
+		code = (code << 1);               //Shift the bits left.
+
+		if (pulse_buf[bp] > ctZeroBit) {  // If a '1' is detected..
+			code |= 1;                    // Set bit 0
+		} else {
+			code &= 0xFFFE;               // Clear bit 0
+		}
+		pulse_buf[bp] = 0;
+	}
+	return (int) code;
+}
+
+uint32_t iii = 0;
+void IRIntHandler(void) {
+	uint32_t ulTimerVal;
+
+	ulTimerVal = TimerValueGet(IR_TIMER_BASE, IR_TIMER);  //Read timer value
+
+// Reset the timer
+	TimerLoadSet(IR_TIMER_BASE, IR_TIMER, g_ulIRPeriod);
+	ir_timeout_flag = 0;
+
+	if (ir_pulse_count == 0) {
+// Change the IO pin to trig on RISING, because after this we are
+// counting IR detector pulses, starting with RISING edge
+		GPIOIntTypeSet(IR_PORT, IR_PIN, GPIO_RISING_EDGE);
+
+// Start the timer
+		TimerEnable(IR_TIMER_BASE, IR_TIMER);
+		iii = 0;
+	} else {
+		iii++;
+		TimerEnable(IR_TIMER_BASE, IR_TIMER);
+		if (ir_pulse_count < MAX_PULSE_COUNT)
+			pulse_buf[ir_pulse_count - 1] = (int) (g_ulIRPeriod - ulTimerVal)
+					/ g_ulCountsPerMicrosecond;
+	}
+
+	ir_pulse_count++;
+
+}
+void delay_ms(uint32_t ui32Ms) {
+
+// 1 clock cycle = 1 / SysCtlClockGet() second
+// 1 SysCtlDelay = 3 clock cycle = 3 / SysCtlClockGet() second
+// 1 second = SysCtlClockGet() / 3
+// 0.001 second = 1 ms = SysCtlClockGet() / 3 / 1000
+
+	ROM_SysCtlDelay(ui32Ms * (ROM_SysCtlClockGet() / 3 / 1000));
+}
+
+void delay_us(uint32_t ui32Us) {
+	ROM_SysCtlDelay(ui32Us * (ROM_SysCtlClockGet() / 3 / 1000000));
 }
 
