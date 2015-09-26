@@ -127,7 +127,8 @@ void InitClocksGPIOAndTimer() {
 	//
 	ROM_SysCtlClockSet(
 	SYSCTL_SYSDIV_5 | SYSCTL_USE_PLL | SYSCTL_XTAL_16MHZ | SYSCTL_OSC_MAIN);
-	ROM_SysCtlPWMClockSet(SYSCTL_PWMDIV_8);
+	ROM_SysCtlPWMClockSet(SYSCTL_PWMDIV_1);
+
 
 	// PWM Setup
 	SysCtlPeripheralEnable(SYSCTL_PERIPH_PWM0);
@@ -150,6 +151,22 @@ void InitClocksGPIOAndTimer() {
 	PWMOutputState(PWM0_BASE, PWM_OUT_6_BIT, false);
 	PWMOutputState(PWM0_BASE, PWM_OUT_7_BIT, false);
 	PWMGenEnable(PWM0_BASE, PWM_GEN_3);
+
+	// PWM Setup for IR LED
+	SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOB);
+	GPIOPinConfigure(GPIO_PB6_M0PWM0);
+	GPIOPinTypePWM(GPIO_PORTB_BASE, GPIO_PIN_6);
+	PWMGenConfigure(PWM0_BASE, PWM_GEN_0,
+	PWM_GEN_MODE_DOWN | PWM_GEN_MODE_NO_SYNC);
+
+	PWMGenPeriodSet(PWM0_BASE, PWM_GEN_0, 1050);
+	PWMPulseWidthSet(PWM0_BASE, PWM_OUT_0, 525);
+
+	PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT, true);
+	PWMGenEnable(PWM0_BASE, PWM_GEN_0);
+
+
+
 
 	//
 	// Enable peripheral and register interrupt handler
