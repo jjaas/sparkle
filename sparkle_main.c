@@ -20,6 +20,10 @@
 //
 //   PA5  -  PIR sensor input
 //   PC5  -  PWM generator output
+//   PE4  -  HW switch input
+//   PA2  -  IR detector input
+//   PC5  -  PWM generator output for LED strip 1 (motion trigged)
+//   PC4  -  PWM generator output for LED strip 2 (switch trigged)
 //   PF2  -  On-board led, blue component
 //
 //*****************************************************************************
