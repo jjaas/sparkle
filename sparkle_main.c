@@ -27,6 +27,9 @@
 //   PF2  -  On-board led, blue component
 //
 //*****************************************************************************
+// Todo: make this runtime selectable, by the user buttons, etc.
+#define RUN_AS_MASTER
+//#define RUN_AS_SLAVE
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -48,6 +51,7 @@
 void GPIOLightSwitchIsr(void);
 void GPIOMotionDetectorIsr(void);
 void SendIRCode(uint32_t code);
+
 void blink_n(uint32_t n);
 void IRIntHandler(void);
 void IRTimerIsr(void);
@@ -101,8 +105,6 @@ volatile uint32_t ir_pulse_count = 0, ir_timeout_flag, ir_ppct;
 volatile uint32_t g_ulIRPeriod, g_ulCountsPerMicrosecond;
 uint32_t pulse_buf[MAX_PULSE_COUNT + 1];  // pulse width count buffer
 
-// Todo: make this runtime selectable, by the user buttons, etc.
-#define RUN_AS_SLAVE
 
 #ifndef RUN_AS_MASTER
 #ifndef RUN_AS_SLAVE
@@ -528,7 +530,7 @@ void blink_n(uint32_t n) {
 // Start pulse first, then the bits, lsb first
 void SendIRCode(uint32_t code) {
 
-	blink_n(code);
+	// blink_n(code);
 	// 1. send start pattern
 	PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT, true);
 	delay_ms(T4);
