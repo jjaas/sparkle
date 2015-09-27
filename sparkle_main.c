@@ -81,9 +81,9 @@ void delay_us(uint32_t ui32Us);
 #define IR_TIMER_INT1    INT_TIMER1A
 #define IR_TIMER_INT2    TIMER_TIMA_TIMEOUT
 
-#define IR_TIMEOUT_VAL   30000
+#define IR_TIMEOUT_VAL   20000 // 20 ms (20000 us) for now
 #define MAX_PULSE_COUNT  100
-#define IR_MAX_BITS_VAL  5 // couple of extra bits
+#define IR_MAX_BITS_VAL  6 // couple of extra bits
 
 // Todo: set better binary values
 #define AMBIENCE_ON 0x1
@@ -97,7 +97,7 @@ int receivedIRCode = 0;
 uint32_t ulPeriod;
 uint32_t ui32Load;
 
-volatile uint32_t ir_pulse_count, ir_timeout_flag, ir_ppct;
+volatile uint32_t ir_pulse_count = 0, ir_timeout_flag, ir_ppct;
 volatile uint32_t g_ulIRPeriod, g_ulCountsPerMicrosecond;
 uint32_t pulse_buf[MAX_PULSE_COUNT + 1];  // pulse width count buffer
 
@@ -251,7 +251,6 @@ void InitClocksGPIOAndTimer() {
 	IntEnable(INT_TIMER1A);
 	TimerIntEnable(TIMER0_BASE, TIMER_TIMA_TIMEOUT);
 	TimerIntEnable(TIMER1_BASE, TIMER_TIMA_TIMEOUT);
-	// TimerEnable(TIMER0_BASE, TIMER_A);
 
 	//
 	// Enable the GPIO port that is used for the on-board LED.
@@ -267,9 +266,6 @@ void InitClocksGPIOAndTimer() {
 	// 10ms = timeout delay
 	g_ulIRPeriod = g_ulCountsPerMicrosecond * IR_TIMEOUT_VAL;
 }
-
-#define OVERHEAD_PWM PWM0_BASE, PWM_OUT_7
-#define WORKSTATE_PWM PWM0_BASE, PWM_OUT_6
 
 //
 // ramp the PWM pulse widht up or down
@@ -480,28 +476,28 @@ int main(void) {
 		// Sleep until next interrupt
 		//
 #else
-		UARTprintf("SLAVE LOOP\n");
+		UARTprintf("SLAVE LOOP: %d\n", ir_pulse_count);
 		if (receivedIRCode != 0) {
 			uint32_t _code = receivedIRCode;
 			receivedIRCode = 0;
 			switch (_code) {
-				case AMBIENCE_ON:
+			case AMBIENCE_ON:
 				rampTopPWM(PWM_RAMP_UP);
 				break;
 
-				case AMBIENCE_OFF:
+			case AMBIENCE_OFF:
 				rampTopPWM(PWM_RAMP_DOWN);
 				break;
 
-				case SWITCH_ON:
+			case SWITCH_ON:
 				rampBottomPWM(PWM_RAMP_UP);
 				break;
 
-				case SWITCH_OFF:
+			case SWITCH_OFF:
 				rampBottomPWM(PWM_RAMP_DOWN);
 				break;
 
-				default:
+			default:
 				break;
 			}
 
@@ -518,27 +514,29 @@ void blink_n(uint32_t n) {
 	int i;
 	for (i = 0; i < n; i++) {
 		setStatusLedState(true);
-		delay_ms(500);
+		delay_ms(200);
 		setStatusLedState(false);
-		delay_ms(500);
+		delay_ms(200);
 	}
 }
 
-#define T1 3
+#define T1 2
 #define T2 (2*T1)
 #define T4 (4*T1)
 
+// Send bit pattern
+// Start pulse first, then the bits, lsb first
 void SendIRCode(uint32_t code) {
 
 	blink_n(code);
 	// 1. send start pattern
 	PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT, true);
 	delay_ms(T4);
-	//	PWMGenEnable(PWM0_BASE, PWM_GEN_0);
 
 	// 2. send code bit-by-bit
 	int i;
-	for (i = 1; i <= (IR_MAX_BITS_VAL); i++) {
+	// UARTprintf("TX: sending %x\n", code);
+	for (i = 0; i < IR_MAX_BITS_VAL; i++) {
 
 		// transmit start of the bit (PWM off)
 		PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT, false);
@@ -546,7 +544,9 @@ void SendIRCode(uint32_t code) {
 
 		// transmit end of the bit (PWM on)
 		PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT, true);
-		int bit = (code >> (IR_MAX_BITS_VAL - i)) & 0x1;
+		// int bit = (code >> i) & 0x1; // LSB first
+		int bit = (code >> ((IR_MAX_BITS_VAL - 1) - i)) & 0x1; // MSB first
+		// UARTprintf("tx: bit %d - %d\n", i, bit);
 		if (bit) {
 			delay_ms(T2);
 		} else {
@@ -592,28 +592,29 @@ void IRTimerIsr(void) {
 }
 
 int decodePulseBuffer(unsigned int *pulse_buf) {
-	unsigned int bp, ctZeroBit;
+	unsigned int i, bitThreshold;
 	unsigned int code;
-
-	code = 0;
-	bp = 0;
 
 // First pulse is a start bit representing 4 time periods(approx. 2.4ms??)
 // calculate 2.5 time periods as the threshold between 2t and 3t
 // any pulse width greater that 2.5t will be considered a logical '1'
-	ctZeroBit = (pulse_buf[0] / 8) * 5;
-
-	for (bp = IR_MAX_BITS_VAL - 1; bp > 0; bp--) { //Start with pulse/bit 12 (MSB)
-
-		code = (code << 1);               //Shift the bits left.
-
-		if (pulse_buf[bp] > ctZeroBit) {  // If a '1' is detected..
-			code |= 1;                    // Set bit 0
-		} else {
-			code &= 0xFFFE;               // Clear bit 0
-		}
-		pulse_buf[bp] = 0;
+	bitThreshold = (pulse_buf[0] * 5) / 8;
+	if (bitThreshold < T1 * 1000) {
+		// some disturbance
+		return 0;
 	}
+	UARTprintf("bit threshold value: %d", bitThreshold);
+	code = 0;
+	i = 0;
+	for (i = 0; i < IR_MAX_BITS_VAL; i++) { //Start with pulse/bit 12 (MSB)
+		code <<= 1;
+		if (pulse_buf[i + 1] > bitThreshold) { // If a '1' is detected..
+			code |= 1;
+		}
+		UARTprintf("[%d] - Len: %d - Code: %d\n", i, pulse_buf[i], code);
+	}
+	UARTprintf("Received code: %d\n", code);
+
 	return (int) code;
 }
 
@@ -642,7 +643,6 @@ void IRIntHandler(void) {
 			pulse_buf[ir_pulse_count - 1] = (int) (g_ulIRPeriod - ulTimerVal)
 					/ g_ulCountsPerMicrosecond;
 	}
-
 	ir_pulse_count++;
 
 }
