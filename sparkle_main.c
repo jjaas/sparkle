@@ -105,7 +105,6 @@ volatile uint32_t ir_pulse_count = 0, ir_timeout_flag, ir_ppct;
 volatile uint32_t g_ulIRPeriod, g_ulCountsPerMicrosecond;
 uint32_t pulse_buf[MAX_PULSE_COUNT + 1];  // pulse width count buffer
 
-
 #ifndef RUN_AS_MASTER
 #ifndef RUN_AS_SLAVE
 #error Define either role
@@ -224,9 +223,13 @@ void InitClocksGPIOAndTimer() {
 	SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOE);
 	GPIOIntRegister(GPIO_PORTE_BASE, GPIOLightSwitchIsr);
 
-	GPIOPinTypeGPIOInput(GPIO_PORTA_BASE, GPIO_PIN_2 | GPIO_PIN_5);
-	GPIOIntTypeSet(GPIO_PORTA_BASE, GPIO_PIN_2, GPIO_FALLING_EDGE);
+#ifdef RUN_AS_MASTER
+	GPIOPinTypeGPIOInput(GPIO_PORTA_BASE, GPIO_PIN_5);
 	GPIOIntTypeSet(GPIO_PORTA_BASE, GPIO_PIN_5, GPIO_BOTH_EDGES);
+#else
+	GPIOPinTypeGPIOInput(GPIO_PORTA_BASE, GPIO_PIN_5);
+	GPIOIntTypeSet(GPIO_PORTA_BASE, GPIO_PIN_2, GPIO_FALLING_EDGE);
+#endif
 
 	GPIOPinTypeGPIOInput(GPIO_PORTE_BASE, GPIO_PIN_4);
 	GPIOIntTypeSet(GPIO_PORTE_BASE, GPIO_PIN_4, GPIO_RISING_EDGE);
@@ -504,7 +507,9 @@ int main(void) {
 			}
 
 			// Blink out the code
-			blink_n(_code);
+			if (_code < 10) {
+				blink_n(_code);
+			}
 		}
 #endif
 		SysCtlSleep();
@@ -522,7 +527,8 @@ void blink_n(uint32_t n) {
 	}
 }
 
-#define T1 2
+// 3ms => bit0=6ms, bit1=9ms
+#define T1 3
 #define T2 (2*T1)
 #define T4 (4*T1)
 
@@ -530,7 +536,7 @@ void blink_n(uint32_t n) {
 // Start pulse first, then the bits, lsb first
 void SendIRCode(uint32_t code) {
 
-	// blink_n(code);
+//	blink_n(code);
 	// 1. send start pattern
 	PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT, true);
 	delay_ms(T4);
@@ -620,7 +626,6 @@ int decodePulseBuffer(unsigned int *pulse_buf) {
 	return (int) code;
 }
 
-uint32_t iii = 0;
 void IRIntHandler(void) {
 	uint32_t ulTimerVal;
 
@@ -637,9 +642,7 @@ void IRIntHandler(void) {
 
 // Start the timer
 		TimerEnable(IR_TIMER_BASE, IR_TIMER);
-		iii = 0;
 	} else {
-		iii++;
 		TimerEnable(IR_TIMER_BASE, IR_TIMER);
 		if (ir_pulse_count < MAX_PULSE_COUNT)
 			pulse_buf[ir_pulse_count - 1] = (int) (g_ulIRPeriod - ulTimerVal)
