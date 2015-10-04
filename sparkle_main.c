@@ -536,7 +536,6 @@ void blink_n(uint32_t n) {
 // Start pulse first, then the bits, lsb first
 void SendIRCode(uint32_t code) {
 
-	blink_n(code);
 	// 1. send start pattern
 	PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT, true);
 	delay_ms(T4);
@@ -564,6 +563,9 @@ void SendIRCode(uint32_t code) {
 
 	// 3. Set the PWM off
 	PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT, false);
+
+	// debug blink-out
+	blink_n(code);
 }
 
 // Interrupt handler for the GPIO motion detector signal
