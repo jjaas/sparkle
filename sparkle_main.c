@@ -63,7 +63,7 @@ int decodePulseBuffer(uint32_t *pulse_buf);
 void delay_ms(uint32_t ui32Us);
 void delay_us(uint32_t ui32Us);
 
-#define LIGHTS_ON_PERIOD_SEC 10
+#define LIGHTS_ON_PERIOD_SEC 60
 #define PWM_FREQUENCY 500
 #define PWM_LOW 10
 #define PWM_STEP 10
