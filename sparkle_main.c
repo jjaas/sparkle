@@ -28,8 +28,8 @@
 //
 //*****************************************************************************
 // Todo: make this runtime selectable, by the user buttons, etc.
-#define RUN_AS_MASTER
-//#define RUN_AS_SLAVE
+//#define RUN_AS_MASTER
+#define RUN_AS_SLAVE
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -63,7 +63,7 @@ int decodePulseBuffer(uint32_t *pulse_buf);
 void delay_ms(uint32_t ui32Us);
 void delay_us(uint32_t ui32Us);
 
-#define LIGHTS_ON_PERIOD_SEC 60
+#define LIGHTS_ON_PERIOD_SEC 10
 #define PWM_FREQUENCY 500
 #define PWM_LOW 10
 #define PWM_STEP 10
@@ -227,7 +227,7 @@ void InitClocksGPIOAndTimer() {
 	GPIOPinTypeGPIOInput(GPIO_PORTA_BASE, GPIO_PIN_5);
 	GPIOIntTypeSet(GPIO_PORTA_BASE, GPIO_PIN_5, GPIO_BOTH_EDGES);
 #else
-	GPIOPinTypeGPIOInput(GPIO_PORTA_BASE, GPIO_PIN_5);
+	GPIOPinTypeGPIOInput(GPIO_PORTA_BASE, GPIO_PIN_2);
 	GPIOIntTypeSet(GPIO_PORTA_BASE, GPIO_PIN_2, GPIO_FALLING_EDGE);
 #endif
 
@@ -536,7 +536,7 @@ void blink_n(uint32_t n) {
 // Start pulse first, then the bits, lsb first
 void SendIRCode(uint32_t code) {
 
-//	blink_n(code);
+	blink_n(code);
 	// 1. send start pattern
 	PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT, true);
 	delay_ms(T4);
