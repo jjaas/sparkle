@@ -39,15 +39,11 @@
 	<variableList>
 		<variable>
 			<name>ORIGINAL_PROJECT_ROOT</name>
-			<value>file:/D:/ti/TivaWare_C_Series-2.1.1.71/examples/boards/ek-tm4c123gxl/hello/ccs</value>
+			<value>file:/C:/ti/TivaWare_C_Series-2.1.2.111/examples/boards/ek-tm4c123gxl/hello/ccs</value>
 		</variable>
 		<variable>
 			<name>SW_ROOT</name>
-			<value>file:/D:/CCS/ccs_workspace/Sparkle</value>
-		</variable>
-		<variable>
-			<name>TIVAWARE_INSTALL</name>
-			<value>file:/D:/ti/TivaWare_C_Series-2.1.1.71</value>
+			<value>file:/c:/gitrepos/omat/sparkle</value>
 		</variable>
 	</variableList>
 </projectDescription>

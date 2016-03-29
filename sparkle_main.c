@@ -28,8 +28,8 @@
 //
 //*****************************************************************************
 // Todo: make this runtime selectable, by the user buttons, etc.
-//#define RUN_AS_MASTER
-#define RUN_AS_SLAVE
+#define RUN_AS_MASTER
+//#define RUN_AS_SLAVE
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -63,7 +63,10 @@ int decodePulseBuffer(uint32_t *pulse_buf);
 void delay_ms(uint32_t ui32Us);
 void delay_us(uint32_t ui32Us);
 
-#define LIGHTS_ON_PERIOD_SEC 180
+#define LIGHTS_ON_PERIOD_SEC 60
+#define SHORT_IDLE_TIME_MINS 3
+#define LONG_IDLE_TIME_MINS 10
+
 #define PWM_FREQUENCY 500
 #define PWM_LOW 10
 #define PWM_STEP 10
@@ -96,10 +99,11 @@ void delay_us(uint32_t ui32Us);
 #define SWITCH_OFF 0x6
 
 bool idleTimerTrigged = 0, motionDetectorTrigged = 0, lightSwitchTrigged = 0;
-int lightSwitchState = 0;
 int receivedIRCode = 0;
 uint32_t ulPeriod;
 uint32_t ui32Load;
+
+uint32_t ulIdleMinutes = 0;
 
 volatile uint32_t ir_pulse_count = 0, ir_timeout_flag, ir_ppct;
 volatile uint32_t g_ulIRPeriod, g_ulCountsPerMicrosecond;
@@ -176,7 +180,7 @@ void InitClocksGPIOAndTimer() {
 	// Set the clocking to run directly from the crystal.
 	//
 	ROM_SysCtlClockSet(
-	SYSCTL_SYSDIV_5 | SYSCTL_USE_PLL | SYSCTL_XTAL_16MHZ | SYSCTL_OSC_MAIN);
+	SYSCTL_SYSDIV_40 | SYSCTL_USE_PLL | SYSCTL_XTAL_16MHZ | SYSCTL_OSC_MAIN);
 	ROM_SysCtlPWMClockSet(SYSCTL_PWMDIV_1);
 
 	// PWM Setup
@@ -187,11 +191,10 @@ void InitClocksGPIOAndTimer() {
 	GPIOPinConfigure(GPIO_PC5_M0PWM7);
 	GPIOPinTypePWM(GPIO_PORTC_BASE, GPIO_PIN_5);
 
-	ui32PWMClock = SysCtlClockGet() / 8;
+	ui32PWMClock = SysCtlClockGet();
 	ui32Load = (ui32PWMClock / PWM_FREQUENCY) - 1;
 
-	PWMGenConfigure(PWM0_BASE, PWM_GEN_3,
-	PWM_GEN_MODE_DOWN | PWM_GEN_MODE_NO_SYNC);
+	PWMGenConfigure(PWM0_BASE, PWM_GEN_3, PWM_GEN_MODE_DOWN | PWM_GEN_MODE_NO_SYNC);
 	PWMGenPeriodSet(PWM0_BASE, PWM_GEN_3, ui32Load);
 	PWMPulseWidthSet(PWM0_BASE, PWM_OUT_6, PWM_LOW);
 	PWMPulseWidthSet(PWM0_BASE, PWM_OUT_7, PWM_LOW);
@@ -314,9 +317,13 @@ void rampGenericPWM(bool rampDirection, uint32_t pwmBase, uint32_t pwm,
 //
 // (re)start timer for idle period counting (no movement -> lights out)
 //
-void startIdleDetectionTimer(uint32_t period) {
+void startIdleDetectionTimer(uint32_t period, bool resetCounter) {
 	TimerLoadSet(TIMER1_BASE, TIMER_A, period);
 	TimerEnable(TIMER1_BASE, TIMER_A);
+	if (resetCounter)
+	{
+		ulIdleMinutes = 0;
+	}
 }
 
 //
@@ -371,7 +378,16 @@ int main(void) {
 
 	UARTprintf("Started!\n");
 
+
+	// Init to shorter period
 	ulPeriod = (SysCtlClockGet() * LIGHTS_ON_PERIOD_SEC);
+#ifdef RUN_AS_MASTER
+	uint32_t ulIdleMinutesLimit = SHORT_IDLE_TIME_MINS;
+	int lightSwitchState = 0;
+#else
+	bool ambienceOn = false;
+	bool lightSwitchOn = false;
+#endif
 
 	// Set the blue led on at startup. Will shut down in first periodic timer trig.
 	setStatusLedState(false);
@@ -397,11 +413,19 @@ int main(void) {
 					UARTprintf("Switching ON\n");
 					SendIRCode(SWITCH_ON);
 					rampBottomPWM(PWM_RAMP_UP);
+
+					// Use longer idle period
+					ulIdleMinutesLimit = LONG_IDLE_TIME_MINS;
+					startIdleDetectionTimer(ulPeriod, true);
 				} else {
 					lightSwitchState = OFF;
 					UARTprintf("Switching OFF\n");
 					SendIRCode(SWITCH_OFF);
 					rampBottomPWM(PWM_RAMP_DOWN);
+
+					// Use shorter idle period
+					ulIdleMinutesLimit = SHORT_IDLE_TIME_MINS;
+					startIdleDetectionTimer(ulPeriod, true);
 				}
 			} else {
 				UARTprintf("False hit\n");
@@ -413,24 +437,34 @@ int main(void) {
 		if (idleTimerTrigged) {
 			// idle (no movement detected) timer trigged
 			idleTimerTrigged = 0;
+			ulIdleMinutes ++;
+			if (ulIdleMinutes < ulIdleMinutesLimit)
+			{
+				startIdleDetectionTimer(ulPeriod, false);
+				blink_n(1);
+			}
+			else
+			{
+				UARTprintf("Idle timer trigged, turning leds off\n");
 
-			UARTprintf("Idle timer trigged, turning leds off\n");
+				if (motionDetectorGPIOActive()) {
+					// Level is still high - let's restart the timer.
 
-			if (motionDetectorGPIOActive()) {
-				// Level is still high - let's restart the timer.
+					UARTprintf("Level still high, restarting timer\n");
+					startIdleDetectionTimer(ulPeriod, true);
+				} else {
+					setStatusLedState(false);
 
-				UARTprintf("Level still high, restarting timer\n");
-				startIdleDetectionTimer(ulPeriod);
-			} else {
-				setStatusLedState(false);
-
-				// Turn the PMW output off
-				SendIRCode(AMBIENCE_OFF);
-				rampTopPWM(PWM_RAMP_DOWN);
-				if (lightSwitchState == 1) {
-					SendIRCode(SWITCH_OFF);
-					rampBottomPWM(PWM_RAMP_DOWN);
-					lightSwitchState = 0;
+					// Turn the PMW output off
+					SendIRCode(AMBIENCE_OFF);
+					rampTopPWM(PWM_RAMP_DOWN);
+					if (lightSwitchState == ON)
+					{
+						SendIRCode(SWITCH_OFF);
+						rampBottomPWM(PWM_RAMP_DOWN);
+					}
+					// Use shorter idle period again after lights of
+					ulIdleMinutesLimit = SHORT_IDLE_TIME_MINS;
 				}
 			}
 		}
@@ -441,12 +475,18 @@ int main(void) {
 			motionDetectorTrigged = 0;
 			UARTprintf("motionDetectorTrigged\n");
 
+			// Send this in any case. Rx shall maintain its own state
+			SendIRCode(AMBIENCE_ON);
 			if (!idleTimerRunning()) {
 				setStatusLedState(true);
 
 				// Turn the PMW output on
-				SendIRCode(AMBIENCE_ON);
 				rampTopPWM(PWM_RAMP_UP);
+				if (lightSwitchState == ON)
+				{
+					SendIRCode(SWITCH_ON);
+					rampBottomPWM(PWM_RAMP_UP);
+				}
 
 				UARTprintf("Starting timer\n");
 			} else {
@@ -454,7 +494,7 @@ int main(void) {
 				UARTprintf("RE-Starting timer\n");
 			}
 
-			startIdleDetectionTimer(ulPeriod);
+			startIdleDetectionTimer(ulPeriod, true);
 		}
 		//if (timerTrigged)
 
@@ -477,9 +517,6 @@ int main(void) {
 				}
 			}
 		}
-		//
-		// Sleep until next interrupt
-		//
 #else
 		UARTprintf("SLAVE LOOP: %d\n", ir_pulse_count);
 		if (receivedIRCode != 0) {
@@ -487,19 +524,35 @@ int main(void) {
 			receivedIRCode = 0;
 			switch (_code) {
 			case AMBIENCE_ON:
-				rampTopPWM(PWM_RAMP_UP);
+				if (!ambienceOn)
+				{
+					rampTopPWM(PWM_RAMP_UP);
+					ambienceOn = true;
+				}
 				break;
 
 			case AMBIENCE_OFF:
-				rampTopPWM(PWM_RAMP_DOWN);
+				if (ambienceOn)
+				{
+					rampTopPWM(PWM_RAMP_DOWN);
+					ambienceOn = false;
+				}
 				break;
 
 			case SWITCH_ON:
-				rampBottomPWM(PWM_RAMP_UP);
+				if (!lightSwitchOn)
+				{
+					rampBottomPWM(PWM_RAMP_UP);
+					lightSwitchOn = true;
+				}
 				break;
 
 			case SWITCH_OFF:
-				rampBottomPWM(PWM_RAMP_DOWN);
+				if (lightSwitchOn)
+				{
+					rampBottomPWM(PWM_RAMP_DOWN);
+					lightSwitchOn = false;
+				}
 				break;
 
 			default:
@@ -507,15 +560,20 @@ int main(void) {
 			}
 
 			// Blink out the code
-			if (_code < 10) {
-				blink_n(_code);
+			if (_code < 10)
+			{
+				// blink_n(_code);
 			}
 		}
 #endif
+		//
+		// Sleep until next interrupt
+		//
 		SysCtlSleep();
 	}
 }
 void blink_n(uint32_t n) {
+
 	setStatusLedState(false);
 	delay_ms(1000);
 	int i;
@@ -525,6 +583,7 @@ void blink_n(uint32_t n) {
 		setStatusLedState(false);
 		delay_ms(200);
 	}
+
 }
 
 // 3ms => bit0=6ms, bit1=9ms
@@ -554,9 +613,11 @@ void SendIRCode(uint32_t code) {
 		// int bit = (code >> i) & 0x1; // LSB first
 		int bit = (code >> ((IR_MAX_BITS_VAL - 1) - i)) & 0x1; // MSB first
 		// UARTprintf("tx: bit %d - %d\n", i, bit);
-		if (bit) {
+		if (bit)
+		{
 			delay_ms(T2);
-		} else {
+		} else
+		{
 			delay_ms(T1);
 		}
 	}
@@ -565,7 +626,7 @@ void SendIRCode(uint32_t code) {
 	PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT, false);
 
 	// debug blink-out
-	blink_n(code);
+	// blink_n(code);
 }
 
 // Interrupt handler for the GPIO motion detector signal
