@@ -211,8 +211,8 @@ void InitClocksGPIOAndTimer() {
 	PWMGenConfigure(PWM0_BASE, PWM_GEN_0,
 	PWM_GEN_MODE_DOWN | PWM_GEN_MODE_NO_SYNC);
 
-	PWMGenPeriodSet(PWM0_BASE, PWM_GEN_0, 1050);
-	PWMPulseWidthSet(PWM0_BASE, PWM_OUT_0, 525);
+	PWMGenPeriodSet(PWM0_BASE, PWM_GEN_0, 1050/8);
+	PWMPulseWidthSet(PWM0_BASE, PWM_OUT_0, 525/8);
 
 	PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT, false);
 	PWMGenEnable(PWM0_BASE, PWM_GEN_0);
@@ -463,8 +463,6 @@ int main(void) {
 						SendIRCode(SWITCH_OFF);
 						rampBottomPWM(PWM_RAMP_DOWN);
 					}
-					// Use shorter idle period again after lights of
-					ulIdleMinutesLimit = SHORT_IDLE_TIME_MINS;
 				}
 			}
 		}
